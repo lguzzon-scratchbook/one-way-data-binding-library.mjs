@@ -3,38 +3,47 @@ import { produce } from "immer";
 
 export default (bindings) => {
   let state = {};
-  let bound = {};
+  let bound = new Map();
 
   const processor = (update) => {
     state = produce(state, update);
 
-    const nextBound = {};
+    const nextBound = new Map();
+    const keysToDelete = new Set(bound.keys());
 
-    scan(Object.keys(bindings), {
+    const scanResult = scan(Object.keys(bindings), {
       joined: true,
       rtn: ["key", "value", "matchedBy"],
-    })(state).forEach(([key, data, matchedBy]) => {
-      matchedBy.forEach((match) => {
-        // No binding exists for this key; bind and call create method
-        if (!(key in bound)) {
-          nextBound[key] = { methods: bindings[match](), data };
-          if (nextBound[key].methods.create) {
-            nextBound[key].methods.create(data, state);
+    })(state);
+
+    for (const [key, data, matchedBy] of scanResult) {
+      for (const match of matchedBy) {
+        if (!bound.has(key)) {
+          const methods = bindings[match]();
+          nextBound.set(key, { methods, data });
+          if (methods.create) {
+            methods.create(data, state);
+          }
+        } else {
+          const existingEntry = bound.get(key);
+          const existingMethods = existingEntry.methods;
+          if (existingMethods.update && data !== existingEntry.data) {
+            nextBound.set(key, { methods: existingMethods, data });
+            existingMethods.update(data, state);
+          } else {
+            nextBound.set(key, existingEntry);
           }
         }
-        // Binding exists and data reference has changed; call update method
-        else if (bound[key].methods.update && data !== bound[key].data) {
-          nextBound[key] = { methods: bound[key].methods, data };
-          nextBound[key].methods.update(data, state);
-        }
-      });
-    });
-
-    Object.keys(bound).forEach((key) => {
-      if (!(key in nextBound) || nextBound[key] === undefined) {
-        bound[key].methods.delete?.(state);
+        keysToDelete.delete(key);
       }
-    });
+    }
+
+    for (const key of keysToDelete) {
+      const methods = bound.get(key).methods;
+      if (methods.delete) {
+        methods.delete(state);
+      }
+    }
 
     bound = nextBound;
 
